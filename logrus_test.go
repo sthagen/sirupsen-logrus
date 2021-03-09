@@ -539,7 +539,7 @@ func TestParseLevel(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, TraceLevel, l)
 
-	l, err = ParseLevel("invalid")
+	_, err = ParseLevel("invalid")
 	assert.Equal(t, "not a valid logrus Level: \"invalid\"", err.Error())
 }
 
@@ -588,15 +588,48 @@ func TestLoggingRaceWithHooksOnEntry(t *testing.T) {
 	logger.AddHook(hook)
 	entry := logger.WithField("context", "clue")
 
-	var wg sync.WaitGroup
+	var (
+		wg    sync.WaitGroup
+		mtx   sync.Mutex
+		start bool
+	)
+
+	cond := sync.NewCond(&mtx)
+
 	wg.Add(100)
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 50; i++ {
 		go func() {
-			entry.Info("info")
+			cond.L.Lock()
+			for !start {
+				cond.Wait()
+			}
+			cond.L.Unlock()
+			for j := 0; j < 100; j++ {
+				entry.Info("info")
+			}
 			wg.Done()
 		}()
 	}
+
+	for i := 0; i < 50; i++ {
+		go func() {
+			cond.L.Lock()
+			for !start {
+				cond.Wait()
+			}
+			cond.L.Unlock()
+			for j := 0; j < 100; j++ {
+				entry.WithField("another field", "with some data").Info("info")
+			}
+			wg.Done()
+		}()
+	}
+
+	cond.L.Lock()
+	start = true
+	cond.L.Unlock()
+	cond.Broadcast()
 	wg.Wait()
 }
 
@@ -656,11 +689,14 @@ func TestEntryWriter(t *testing.T) {
 	log := New()
 	log.Out = cw
 	log.Formatter = new(JSONFormatter)
-	log.WithField("foo", "bar").WriterLevel(WarnLevel).Write([]byte("hello\n"))
+	_, err := log.WithField("foo", "bar").WriterLevel(WarnLevel).Write([]byte("hello\n"))
+	if err != nil {
+		t.Error("unexecpted error", err)
+	}
 
 	bs := <-cw
 	var fields Fields
-	err := json.Unmarshal(bs, &fields)
+	err = json.Unmarshal(bs, &fields)
 	assert.Nil(t, err)
 	assert.Equal(t, fields["foo"], "bar")
 	assert.Equal(t, fields["level"], "warning")

@@ -2,10 +2,7 @@
 
 set -e
 
-if [[ "$TRAVIS_GO_VERSION" =~ ^1.\12\. ]] && [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
-    git clone https://github.com/dgsb/gox.git /tmp/gox
-    pushd /tmp/gox
-    git checkout new_master
-    go build ./
-    popd
+# Install golanci 1.32.2
+if [[ "$TRAVIS_GO_VERSION" =~ ^1\.15\. ]]; then
+    curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s -- -b $(go env GOPATH)/bin v1.32.2
 fi
