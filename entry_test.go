@@ -241,20 +241,20 @@ func TestEntryWithIncorrectField(t *testing.T) {
 	eWithFunc := e.WithFields(Fields{"func": fn})
 	eWithFuncPtr := e.WithFields(Fields{"funcPtr": &fn})
 
-	assert.Equal(eWithFunc.err, `can not add field "func"`)
-	assert.Equal(eWithFuncPtr.err, `can not add field "funcPtr"`)
+	assert.Equal(`can not add field "func"`, eWithFunc.err)
+	assert.Equal(`can not add field "funcPtr"`, eWithFuncPtr.err)
 
 	eWithFunc = eWithFunc.WithField("not_a_func", "it is a string")
 	eWithFuncPtr = eWithFuncPtr.WithField("not_a_func", "it is a string")
 
-	assert.Equal(eWithFunc.err, `can not add field "func"`)
-	assert.Equal(eWithFuncPtr.err, `can not add field "funcPtr"`)
+	assert.Equal(`can not add field "func"`, eWithFunc.err)
+	assert.Equal(`can not add field "funcPtr"`, eWithFuncPtr.err)
 
 	eWithFunc = eWithFunc.WithTime(time.Now())
 	eWithFuncPtr = eWithFuncPtr.WithTime(time.Now())
 
-	assert.Equal(eWithFunc.err, `can not add field "func"`)
-	assert.Equal(eWithFuncPtr.err, `can not add field "funcPtr"`)
+	assert.Equal(`can not add field "func"`, eWithFunc.err)
+	assert.Equal(`can not add field "funcPtr"`, eWithFuncPtr.err)
 }
 
 func TestEntryLogfLevel(t *testing.T) {
@@ -276,7 +276,7 @@ func TestEntryReportCallerRace(t *testing.T) {
 	entry := NewEntry(logger)
 
 	// logging before SetReportCaller has the highest chance of causing a race condition
-	// to be detected, but doing it twice just to increase the likelyhood of detecting the race
+	// to be detected, but doing it twice just to increase the likelihood of detecting the race
 	go func() {
 		entry.Info("should not race")
 	}()
@@ -293,7 +293,7 @@ func TestEntryFormatterRace(t *testing.T) {
 	entry := NewEntry(logger)
 
 	// logging before SetReportCaller has the highest chance of causing a race condition
-	// to be detected, but doing it twice just to increase the likelyhood of detecting the race
+	// to be detected, but doing it twice just to increase the likelihood of detecting the race
 	go func() {
 		entry.Info("should not race")
 	}()
