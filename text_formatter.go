@@ -3,6 +3,7 @@ package logrus
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"runtime"
 	"sort"
@@ -20,11 +21,7 @@ const (
 	gray   = 37
 )
 
-var baseTimestamp time.Time
-
-func init() {
-	baseTimestamp = time.Now()
-}
+var baseTimestamp = time.Now()
 
 // TextFormatter formats logs into text
 type TextFormatter struct {
@@ -115,26 +112,27 @@ func (f *TextFormatter) init(entry *Entry) {
 }
 
 func (f *TextFormatter) isColored() bool {
-	isColored := f.ForceColors || (f.isTerminal && (runtime.GOOS != "windows"))
-
-	if f.EnvironmentOverrideColors {
-		switch force, ok := os.LookupEnv("CLICOLOR_FORCE"); {
-		case ok && force != "0":
-			isColored = true
-		case ok && force == "0", os.Getenv("CLICOLOR") == "0":
-			isColored = false
-		}
+	if f.DisableColors {
+		return false
 	}
 
-	return isColored && !f.DisableColors
+	colored := f.ForceColors || (f.isTerminal && (runtime.GOOS != "windows"))
+	if !f.EnvironmentOverrideColors {
+		return colored
+	}
+	if force, ok := os.LookupEnv("CLICOLOR_FORCE"); ok {
+		return force != "0"
+	}
+	if os.Getenv("CLICOLOR") == "0" {
+		return false
+	}
+	return colored
 }
 
 // Format renders a single log entry
 func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {
 	data := make(Fields)
-	for k, v := range entry.Data {
-		data[k] = v
-	}
+	maps.Copy(data, entry.Data)
 	prefixFieldClashes(data, f.FieldMap, entry.HasCaller())
 	keys := make([]string, 0, len(data))
 	for k := range data {
@@ -204,7 +202,7 @@ func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {
 	} else {
 
 		for _, key := range fixedKeys {
-			var value interface{}
+			var value any
 			switch {
 			case key == f.FieldMap.resolve(FieldKeyTime):
 				value = entry.Time.Format(timestampFormat)
@@ -317,7 +315,7 @@ func (f *TextFormatter) needsQuoting(text string) bool {
 	return false
 }
 
-func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value interface{}) {
+func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value any) {
 	if b.Len() > 0 {
 		b.WriteByte(' ')
 	}
@@ -326,7 +324,7 @@ func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value interf
 	f.appendValue(b, value)
 }
 
-func (f *TextFormatter) appendValue(b *bytes.Buffer, value interface{}) {
+func (f *TextFormatter) appendValue(b *bytes.Buffer, value any) {
 	stringVal, ok := value.(string)
 	if !ok {
 		stringVal = fmt.Sprint(value)
