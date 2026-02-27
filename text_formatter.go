@@ -11,14 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
-)
-
-const (
-	red    = 31
-	yellow = 33
-	blue   = 36
-	gray   = 37
 )
 
 var baseTimestamp = time.Now()
@@ -93,21 +85,11 @@ type TextFormatter struct {
 	CallerPrettyfier func(*runtime.Frame) (function string, file string)
 
 	terminalInitOnce sync.Once
-
-	// The max length of the level text, generated dynamically on init
-	levelTextMaxLength int
 }
 
 func (f *TextFormatter) init(entry *Entry) {
 	if entry.Logger != nil {
 		f.isTerminal = checkIfTerminal(entry.Logger.Out)
-	}
-	// Get the max length of the level text
-	for _, level := range AllLevels {
-		levelTextLength := utf8.RuneCount([]byte(level.String()))
-		if levelTextLength > f.levelTextMaxLength {
-			f.levelTextMaxLength = levelTextLength
-		}
 	}
 }
 
@@ -200,7 +182,6 @@ func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {
 	if f.isColored() {
 		f.printColored(b, entry, keys, data, timestampFormat)
 	} else {
-
 		for _, key := range fixedKeys {
 			var value any
 			switch {
@@ -228,34 +209,6 @@ func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {
 }
 
 func (f *TextFormatter) printColored(b *bytes.Buffer, entry *Entry, keys []string, data Fields, timestampFormat string) {
-	var levelColor int
-	switch entry.Level {
-	case DebugLevel, TraceLevel:
-		levelColor = gray
-	case WarnLevel:
-		levelColor = yellow
-	case ErrorLevel, FatalLevel, PanicLevel:
-		levelColor = red
-	case InfoLevel:
-		levelColor = blue
-	default:
-		levelColor = blue
-	}
-
-	levelText := strings.ToUpper(entry.Level.String())
-	if !f.DisableLevelTruncation && !f.PadLevelText {
-		levelText = levelText[0:4]
-	}
-	if f.PadLevelText {
-		// Generates the format string used in the next line, for example "%-6s" or "%-7s".
-		// Based on the max level text length.
-		formatString := "%-" + strconv.Itoa(f.levelTextMaxLength) + "s"
-		// Formats the level text by appending spaces up to the max length, for example:
-		// 	- "INFO   "
-		//	- "WARNING"
-		levelText = fmt.Sprintf(formatString, levelText)
-	}
-
 	// Remove a single newline if it already exists in the message to keep
 	// the behavior of logrus text_formatter the same as the stdlib log package
 	entry.Message = strings.TrimSuffix(entry.Message, "\n")
@@ -278,41 +231,23 @@ func (f *TextFormatter) printColored(b *bytes.Buffer, entry *Entry, keys []strin
 		}
 	}
 
+	levelText := levelPrefix(entry.Level, f.DisableLevelTruncation, f.PadLevelText)
 	switch {
 	case f.DisableTimestamp:
-		fmt.Fprintf(b, "\x1b[%dm%s\x1b[0m%s %-44s ", levelColor, levelText, caller, entry.Message)
+		_, _ = fmt.Fprintf(b, "%s%s %-44s ", levelText, caller, entry.Message)
 	case !f.FullTimestamp:
-		fmt.Fprintf(b, "\x1b[%dm%s\x1b[0m[%04d]%s %-44s ", levelColor, levelText, int(entry.Time.Sub(baseTimestamp)/time.Second), caller, entry.Message)
+		_, _ = fmt.Fprintf(b, "%s[%04d]%s %-44s ", levelText, int(entry.Time.Sub(baseTimestamp)/time.Second), caller, entry.Message)
 	default:
-		fmt.Fprintf(b, "\x1b[%dm%s\x1b[0m[%s]%s %-44s ", levelColor, levelText, entry.Time.Format(timestampFormat), caller, entry.Message)
+		_, _ = fmt.Fprintf(b, "%s[%s]%s %-44s ", levelText, entry.Time.Format(timestampFormat), caller, entry.Message)
 	}
-	for _, k := range keys {
-		v := data[k]
-		fmt.Fprintf(b, " \x1b[%dm%s\x1b[0m=", levelColor, k)
-		f.appendValue(b, v)
-	}
-}
 
-func (f *TextFormatter) needsQuoting(text string) bool {
-	if f.ForceQuote {
-		return true
+	// Keys use the same color as the level-prefix.
+	for _, k := range keys {
+		b.WriteByte(' ')
+		b.WriteString(colorize(entry.Level, k))
+		b.WriteByte('=')
+		f.appendValue(b, data[k])
 	}
-	if f.QuoteEmptyFields && len(text) == 0 {
-		return true
-	}
-	if f.DisableQuote {
-		return false
-	}
-	for _, ch := range text {
-		//nolint:staticcheck // QF1001: could apply De Morgan's law
-		if !((ch >= 'a' && ch <= 'z') ||
-			(ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') ||
-			ch == '-' || ch == '.' || ch == '_' || ch == '/' || ch == '@' || ch == '^' || ch == '+') {
-			return true
-		}
-	}
-	return false
 }
 
 func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value any) {
@@ -325,14 +260,144 @@ func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value any) {
 }
 
 func (f *TextFormatter) appendValue(b *bytes.Buffer, value any) {
-	stringVal, ok := value.(string)
-	if !ok {
-		stringVal = fmt.Sprint(value)
+	// Fast paths.
+	switch v := value.(type) {
+	case string:
+		f.appendString(b, v)
+		return
+	case []byte:
+		f.appendBytes(b, v)
+		return
+	case bool:
+		var raw [8]byte
+		f.appendBytes(b, strconv.AppendBool(raw[:0], v))
+		return
+	case error:
+		f.appendString(b, v.Error())
+		return
+	case fmt.Stringer:
+		f.appendString(b, v.String())
+		return
 	}
 
-	if !f.needsQuoting(stringVal) {
-		b.WriteString(stringVal)
-	} else {
-		fmt.Fprintf(b, "%q", stringVal)
+	// Handle common primitives.
+	var raw [64]byte
+	var num []byte
+
+	switch v := value.(type) {
+	case int:
+		num = strconv.AppendInt(raw[:0], int64(v), 10)
+	case int8:
+		num = strconv.AppendInt(raw[:0], int64(v), 10)
+	case int16:
+		num = strconv.AppendInt(raw[:0], int64(v), 10)
+	case int32:
+		num = strconv.AppendInt(raw[:0], int64(v), 10)
+	case int64:
+		num = strconv.AppendInt(raw[:0], v, 10)
+
+	case uint:
+		num = strconv.AppendUint(raw[:0], uint64(v), 10)
+	case uint8:
+		num = strconv.AppendUint(raw[:0], uint64(v), 10)
+	case uint16:
+		num = strconv.AppendUint(raw[:0], uint64(v), 10)
+	case uint32:
+		num = strconv.AppendUint(raw[:0], uint64(v), 10)
+	case uint64:
+		num = strconv.AppendUint(raw[:0], v, 10)
+	case uintptr:
+		num = strconv.AppendUint(raw[:0], uint64(v), 10)
+
+	case float32:
+		num = strconv.AppendFloat(raw[:0], float64(v), 'g', -1, 32)
+	case float64:
+		num = strconv.AppendFloat(raw[:0], v, 'g', -1, 64)
+
+	default:
+		f.appendString(b, fmt.Sprint(value))
+		return
+	}
+
+	f.appendNumeric(b, num)
+}
+
+func (f *TextFormatter) appendString(b *bytes.Buffer, s string) {
+	quote := f.ForceQuote || (f.QuoteEmptyFields && len(s) == 0) || (!f.DisableQuote && needsQuoting(s))
+	if !quote {
+		b.WriteString(s)
+		return
+	}
+	if len(s) == 0 {
+		b.WriteString(`""`)
+		return
+	}
+
+	var tmp [128]byte
+	b.Write(strconv.AppendQuote(tmp[:0], s))
+}
+
+func (f *TextFormatter) appendBytes(b *bytes.Buffer, bs []byte) {
+	quote := f.ForceQuote || (f.QuoteEmptyFields && len(bs) == 0) || (!f.DisableQuote && needsQuotingBytes(bs))
+	if !quote {
+		b.Write(bs)
+		return
+	}
+	if len(bs) == 0 {
+		b.WriteString(`""`)
+		return
+	}
+
+	var tmp [128]byte
+	b.Write(strconv.AppendQuote(tmp[:0], string(bs)))
+}
+
+func (f *TextFormatter) appendNumeric(b *bytes.Buffer, out []byte) {
+	if f.ForceQuote {
+		var tmp [128]byte
+		b.Write(strconv.AppendQuote(tmp[:0], string(out)))
+		return
+	}
+	b.Write(out)
+}
+
+// needsQuoting returns true if the string contains any byte that
+// requires quoting. It returns false when every byte is "safe" according
+// to isSafeByte.
+func needsQuoting(s string) bool {
+	// use an index loop (avoid rune decoding).
+	for i := range len(s) {
+		c := s[i]
+		if !isSafeByte(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// needsQuotingBytes returns true if the byte slice contains any byte that
+// requires quoting. It returns false when every byte is "safe" according
+// to isSafeByte.
+func needsQuotingBytes(bs []byte) bool {
+	for _, c := range bs {
+		if !isSafeByte(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSafeByte returns true if the byte is allowed unquoted (ASCII and in the allowlist).
+// It purposely uses byte arithmetic (no runes) for performance.
+func isSafeByte(ch byte) bool {
+	ok := ch < 0x80 && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+	if ok {
+		return true
+	}
+	switch ch {
+	case '-', '.', '_', '/', '@', '^', '+':
+		return true
+	default:
+		return false
 	}
 }
