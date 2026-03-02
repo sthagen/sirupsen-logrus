@@ -217,10 +217,11 @@ func getCaller() *runtime.Frame {
 	return nil
 }
 
-func (entry Entry) HasCaller() (has bool) {
-	return entry.Logger != nil &&
-		entry.Logger.ReportCaller &&
-		entry.Caller != nil
+func (entry Entry) HasCaller() bool {
+	// Caller is attached to the Entry in Entry.log() based on the logger's
+	// ReportCaller value at log time. Reading Logger.ReportCaller here is
+	// racy with concurrent SetReportCaller and unnecessary.
+	return entry.Caller != nil
 }
 
 func (entry *Entry) log(level Level, msg string) {
@@ -287,15 +288,25 @@ func (entry *Entry) fireHooks() {
 }
 
 func (entry *Entry) write() {
+	// Snapshot the formatter under the lock to protect against concurrent
+	// SetFormatter calls, then release the lock before formatting.
+	// This avoids a deadlock when Format() triggers reentrant logging (e.g.,
+	// a field's MarshalJSON calls logrus). See #1448, #1440.
 	entry.Logger.mu.Lock()
-	defer entry.Logger.mu.Unlock()
-	serialized, err := entry.Logger.Formatter.Format(entry)
+	formatter := entry.Logger.Formatter
+	entry.Logger.mu.Unlock()
+
+	serialized, err := formatter.Format(entry)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to obtain reader, %v\n", err)
+		_, _ = fmt.Fprintln(os.Stderr, "Failed to format entry:", err)
 		return
 	}
+
+	// Re-acquire the lock to serialize writes to the underlying io.Writer.
+	entry.Logger.mu.Lock()
+	defer entry.Logger.mu.Unlock()
 	if _, err := entry.Logger.Out.Write(serialized); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write to log, %v\n", err)
+		_, _ = fmt.Fprintln(os.Stderr, "Failed to write to log:", err)
 	}
 }
 
