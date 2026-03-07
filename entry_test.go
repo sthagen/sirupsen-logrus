@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -286,6 +287,7 @@ func TestEntryLogfLevel(t *testing.T) {
 
 func TestEntryReportCallerRace(t *testing.T) {
 	logger := logrus.New()
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 
 	// logging before SetReportCaller has the highest chance of causing a race condition
@@ -303,6 +305,7 @@ func TestEntryReportCallerRace(t *testing.T) {
 
 func TestEntryFormatterRace(t *testing.T) {
 	logger := logrus.New()
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 
 	// logging before SetReportCaller has the highest chance of causing a race condition
@@ -316,6 +319,45 @@ func TestEntryFormatterRace(t *testing.T) {
 	go func() {
 		entry.Info("should not race")
 	}()
+}
+
+type noopHook struct{}
+
+func (noopHook) Levels() []logrus.Level   { return logrus.AllLevels }
+func (noopHook) Fire(*logrus.Entry) error { return nil }
+
+func TestHookAddRace(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	entry := logrus.NewEntry(logger)
+
+	const n = 100
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for range n {
+			entry.Info("should not race")
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for range n {
+			logger.AddHook(noopHook{})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for range n {
+			entry.Info("should not race")
+		}
+	}()
+
+	wg.Wait()
 }
 
 // reentrantValue is a type whose MarshalJSON method triggers another log call,

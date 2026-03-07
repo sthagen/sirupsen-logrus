@@ -19,10 +19,12 @@ type Logger struct {
 	// file, or leave it default which is `os.Stderr`. You can also set this to
 	// something more adventurous, such as logging to Kafka.
 	Out io.Writer
+
 	// Hooks for the logger instance. These allow firing events based on logging
 	// levels and log entries. For example, to send errors to an error tracking
 	// service, log to StatsD or dump the core on fatal errors.
 	Hooks LevelHooks
+
 	// All log entries pass through the formatter before logged to Out. The
 	// included formatters are `TextFormatter` and `JSONFormatter` for which
 	// TextFormatter is the default. In development (when a TTY is attached) it
@@ -38,18 +40,20 @@ type Logger struct {
 	// to) `logrus.Info`, which allows Info(), Warn(), Error() and Fatal() to be
 	// logged.
 	Level Level
+
 	// Used to sync writing to the log. Locking is enabled by Default
 	mu MutexWrap
+
 	// Reusable empty entry
 	entryPool sync.Pool
+
 	// Function to exit the application, defaults to `os.Exit()`
-	ExitFunc exitFunc
+	ExitFunc func(int)
+
 	// The buffer pool used to format the log. If it is nil, the default global
 	// buffer pool will be used.
 	BufferPool BufferPool
 }
-
-type exitFunc func(int)
 
 type MutexWrap struct {
 	lock     sync.Mutex
@@ -375,6 +379,21 @@ func (logger *Logger) AddHook(hook Hook) {
 	logger.Hooks.Add(hook)
 }
 
+// hooksForLevel returns a snapshot of the hooks registered for the given level.
+// The returned slice is a shallow copy and may be used without holding logger.mu.
+func (logger *Logger) hooksForLevel(level Level) []Hook {
+	logger.mu.Lock()
+	hooks := logger.Hooks[level]
+	if len(hooks) == 0 {
+		logger.mu.Unlock()
+		return nil
+	}
+	out := make([]Hook, len(hooks))
+	copy(out, hooks)
+	logger.mu.Unlock()
+	return out
+}
+
 // IsLevelEnabled checks if logging for the given level is enabled.
 func (logger *Logger) IsLevelEnabled(level Level) bool {
 	return logger.level() >= level
@@ -403,9 +422,9 @@ func (logger *Logger) SetReportCaller(reportCaller bool) {
 // ReplaceHooks replaces the logger hooks and returns the old ones
 func (logger *Logger) ReplaceHooks(hooks LevelHooks) LevelHooks {
 	logger.mu.Lock()
+	defer logger.mu.Unlock()
 	oldHooks := logger.Hooks
 	logger.Hooks = hooks
-	logger.mu.Unlock()
 	return oldHooks
 }
 
