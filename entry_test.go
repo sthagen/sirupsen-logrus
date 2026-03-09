@@ -22,7 +22,7 @@ func TestEntryWithError(t *testing.T) {
 	assert.Equal(t, expErr, logrus.WithError(expErr).Data["error"])
 
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 
 	assert.Equal(t, expErr, entry.WithError(expErr).Data["error"])
@@ -44,7 +44,7 @@ func TestEntryWithContext(t *testing.T) {
 	assert.Equal(ctx, logrus.WithContext(ctx).Context)
 
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 
 	assert.Equal(ctx, entry.WithContext(ctx).Context)
@@ -55,7 +55,7 @@ func TestEntryWithContextCopiesData(t *testing.T) {
 
 	// Initialize a parent Entry object with a key/value set in its Data map
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	parentEntry := logrus.NewEntry(logger).WithField("parentKey", "parentValue")
 
 	// Create two children Entry objects from the parent in different contexts
@@ -98,7 +98,7 @@ func TestEntryWithTimeCopiesData(t *testing.T) {
 
 	// Initialize a parent Entry object with a key/value set in its Data map
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	parentEntry := logrus.NewEntry(logger).WithField("parentKey", "parentValue")
 
 	// Create two children Entry objects from the parent with two different times
@@ -145,7 +145,7 @@ func TestEntryPanicln(t *testing.T) {
 	}()
 
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 	entry.WithField("err", errBoom).Panicln("kaboom")
 }
@@ -167,7 +167,7 @@ func TestEntryPanicf(t *testing.T) {
 	}()
 
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 	entry.WithField("err", errBoom).Panicf("kaboom %v", true)
 }
@@ -189,7 +189,7 @@ func TestEntryPanic(t *testing.T) {
 	}()
 
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
+	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
 	entry.WithField("err", errBoom).Panic("kaboom")
 }
@@ -215,9 +215,9 @@ func (p *panickyHook) Fire(entry *logrus.Entry) error {
 
 func TestEntryHooksPanic(t *testing.T) {
 	logger := logrus.New()
-	logger.Out = &bytes.Buffer{}
-	logger.Level = logrus.InfoLevel
-	logger.Hooks.Add(&panickyHook{})
+	logger.SetOutput(io.Discard)
+	logger.SetLevel(logrus.InfoLevel)
+	logger.AddHook(&panickyHook{})
 
 	defer func() {
 		p := recover()
@@ -272,9 +272,9 @@ func getErr(t *testing.T, e *logrus.Entry) string {
 }
 
 func TestEntryLogfLevel(t *testing.T) {
+	var buffer bytes.Buffer
 	logger := logrus.New()
-	buffer := &bytes.Buffer{}
-	logger.Out = buffer
+	logger.SetOutput(&buffer)
 	logger.SetLevel(logrus.InfoLevel)
 	entry := logrus.NewEntry(logger)
 
@@ -285,40 +285,32 @@ func TestEntryLogfLevel(t *testing.T) {
 	assert.Contains(t, buffer.String(), "warn")
 }
 
-func TestEntryReportCallerRace(t *testing.T) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
-	entry := logrus.NewEntry(logger)
+func TestEntryLoggerMutationRace(t *testing.T) {
+	tests := []struct {
+		doc    string
+		mutate func(*logrus.Logger)
+	}{
+		{doc: "AddHook", mutate: func(l *logrus.Logger) { l.AddHook(noopHook{}) }},
+		{doc: "SetBufferPool", mutate: func(l *logrus.Logger) { l.SetBufferPool(nopBufferPool{}) }},
+		{doc: "SetFormatter", mutate: func(l *logrus.Logger) { l.SetFormatter(&logrus.TextFormatter{}) }},
+		{doc: "SetLevel", mutate: func(l *logrus.Logger) { l.SetLevel(logrus.InfoLevel) }},
+		{doc: "SetOutput", mutate: func(l *logrus.Logger) { l.SetOutput(io.Discard) }},
+		{doc: "SetReportCaller", mutate: func(l *logrus.Logger) { l.SetReportCaller(true) }},
+		{doc: "ReplaceHooks_withHookPresent", mutate: func(l *logrus.Logger) {
+			// Replace with a fresh map each time to maximize mutation.
+			h := make(logrus.LevelHooks)
+			for _, lvl := range logrus.AllLevels {
+				h[lvl] = []logrus.Hook{noopHook{}}
+			}
+			l.ReplaceHooks(h)
+		}},
+	}
 
-	// logging before SetReportCaller has the highest chance of causing a race condition
-	// to be detected, but doing it twice just to increase the likelihood of detecting the race
-	go func() {
-		entry.Info("should not race")
-	}()
-	go func() {
-		logger.SetReportCaller(true)
-	}()
-	go func() {
-		entry.Info("should not race")
-	}()
-}
-
-func TestEntryFormatterRace(t *testing.T) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
-	entry := logrus.NewEntry(logger)
-
-	// logging before SetReportCaller has the highest chance of causing a race condition
-	// to be detected, but doing it twice just to increase the likelihood of detecting the race
-	go func() {
-		entry.Info("should not race")
-	}()
-	go func() {
-		logger.SetFormatter(&logrus.TextFormatter{})
-	}()
-	go func() {
-		entry.Info("should not race")
-	}()
+	for _, tc := range tests {
+		t.Run(tc.doc, func(t *testing.T) {
+			runEntryLoggerRace(t, tc.mutate)
+		})
+	}
 }
 
 type noopHook struct{}
@@ -326,7 +318,14 @@ type noopHook struct{}
 func (noopHook) Levels() []logrus.Level   { return logrus.AllLevels }
 func (noopHook) Fire(*logrus.Entry) error { return nil }
 
-func TestHookAddRace(t *testing.T) {
+type nopBufferPool struct{}
+
+func (nopBufferPool) Get() *bytes.Buffer { return new(bytes.Buffer) }
+func (nopBufferPool) Put(*bytes.Buffer)  {}
+
+func runEntryLoggerRace(t *testing.T, mutate func(logger *logrus.Logger)) {
+	t.Helper()
+
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	entry := logrus.NewEntry(logger)
@@ -334,7 +333,14 @@ func TestHookAddRace(t *testing.T) {
 	const n = 100
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+		for range n {
+			_, _ = entry.Bytes()
+		}
+	}()
 
 	go func() {
 		defer wg.Done()
@@ -346,7 +352,7 @@ func TestHookAddRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range n {
-			logger.AddHook(noopHook{})
+			mutate(logger)
 		}
 	}()
 
@@ -375,9 +381,9 @@ func (r reentrantValue) MarshalJSON() ([]byte, error) {
 // MarshalJSON (or similar serialization callback) does not deadlock.
 // This is a regression test for https://github.com/sirupsen/logrus/issues/1448.
 func TestEntryReentrantLoggingDeadlock(t *testing.T) {
+	var buf bytes.Buffer
 	logger := logrus.New()
-	buf := &bytes.Buffer{}
-	logger.Out = buf
+	logger.SetOutput(&buf)
 	logger.SetFormatter(&logrus.JSONFormatter{})
 
 	done := make(chan struct{})

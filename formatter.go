@@ -2,15 +2,28 @@ package logrus
 
 import "time"
 
+const (
+	// defaultTimestampFormat is the layout used to format entry timestamps
+	// when a formatter has not specified a custom TimestampFormat.
+	// It follows time.RFC3339 and is applied unless timestamps are disabled.
+	defaultTimestampFormat = time.RFC3339
+
+	// defaultFields is the number of commonly included predefined log entry fields
+	// (msg, level, time). It is used as a capacity hint when constructing
+	// intermediate collections during formatting (for example, the fixed key list).
+	//
+	// It does not include the optional "logrus_error", "func", or "file" fields.
+	defaultFields = 3
+)
+
 // Default key names for the default fields
 const (
-	defaultTimestampFormat = time.RFC3339
-	FieldKeyMsg            = "msg"
-	FieldKeyLevel          = "level"
-	FieldKeyTime           = "time"
-	FieldKeyLogrusError    = "logrus_error"
-	FieldKeyFunc           = "func"
-	FieldKeyFile           = "file"
+	FieldKeyMsg         = "msg"
+	FieldKeyLevel       = "level"
+	FieldKeyTime        = "time"
+	FieldKeyLogrusError = "logrus_error"
+	FieldKeyFunc        = "func"
+	FieldKeyFile        = "file"
 )
 
 // The Formatter interface is used to implement a custom Formatter. It takes an
@@ -30,12 +43,12 @@ type Formatter interface {
 // This is to not silently overwrite `time`, `msg`, `func` and `level` fields when
 // dumping it. If this code wasn't there doing:
 //
-//  logrus.WithField("level", 1).Info("hello")
+//	logrus.WithField("level", 1).Info("hello")
 //
 // Would just silently drop the user provided level. Instead with this code
 // it'll logged as:
 //
-//  {"level": "info", "fields.level": 1, "msg": "hello", "time": "..."}
+//	{"level": "info", "fields.level": 1, "msg": "hello", "time": "..."}
 //
 // It's not exported because it's still using Data in an opinionated way. It's to
 // avoid code duplication between the two default formatters.

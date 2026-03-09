@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -194,14 +195,18 @@ func TestDisableLevelTruncation(t *testing.T) {
 		Time:    time.Now(),
 		Message: "testing",
 	}
-	keys := []string{}
-	timestampFormat := "Mon Jan 2 15:04:05 -0700 MST 2006"
 	checkDisableTruncation := func(disabled bool, level Level) {
-		tf := &TextFormatter{DisableLevelTruncation: disabled}
-		var b bytes.Buffer
+		tf := &TextFormatter{
+			DisableLevelTruncation: disabled,
+			ForceColors:            true,
+			DisableTimestamp:       true,
+		}
 		entry.Level = level
-		tf.printColored(&b, entry, keys, nil, timestampFormat)
-		logLine := (&b).String()
+		out, err := tf.Format(entry)
+		if err != nil {
+			t.Errorf("error formatting log entry: %s", err)
+		}
+		logLine := string(out)
 		if disabled {
 			expected := strings.ToUpper(level.String())
 			if !strings.Contains(logLine, expected) {
@@ -278,21 +283,22 @@ func TestPadLevelText(t *testing.T) {
 
 	// We create a "default" TextFormatter to do a control test.
 	// We also create a TextFormatter with PadLevelText, which is the parameter we want to do our most relevant assertions against.
-	tfDefault := TextFormatter{}
-	tfWithPadding := TextFormatter{PadLevelText: true}
+	tfDefault := TextFormatter{ForceColors: true}
+	tfWithPadding := TextFormatter{ForceColors: true, PadLevelText: true}
 
 	for _, val := range params {
 		t.Run(val.name, func(t *testing.T) {
-			// TextFormatter writes into these bytes.Buffers, and we make assertions about their contents later
-			var bytesDefault bytes.Buffer
-			var bytesWithPadding bytes.Buffer
+			out, err := tfDefault.Format(&Entry{Level: val.level})
+			if err != nil {
+				t.Errorf("error formatting log entry: %s", err)
+			}
+			logLineDefault := string(out)
 
-			tfDefault.printColored(&bytesDefault, &Entry{Level: val.level}, []string{}, nil, "")
-			tfWithPadding.printColored(&bytesWithPadding, &Entry{Level: val.level}, []string{}, nil, "")
-
-			// turn the bytes back into a string so that we can actually work with the data
-			logLineDefault := (&bytesDefault).String()
-			logLineWithPadding := (&bytesWithPadding).String()
+			out, err = tfWithPadding.Format(&Entry{Level: val.level})
+			if err != nil {
+				t.Errorf("error formatting log entry: %s", err)
+			}
+			logLineWithPadding := string(out)
 
 			// Control: the level text should not be padded by default
 			if val.paddedLevelText != "" && strings.Contains(logLineDefault, val.paddedLevelText) {
@@ -308,7 +314,6 @@ func TestPadLevelText(t *testing.T) {
 			if val.paddedLevelText != "" && !strings.Contains(logLineWithPadding, val.paddedLevelText) {
 				t.Errorf("log line %q should contain the padded level text %q when padding is enabled", logLineWithPadding, val.paddedLevelText)
 			}
-
 		})
 	}
 }
@@ -493,20 +498,21 @@ func TestTextFormatterIsColored(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			tf := TextFormatter{
-				isTerminal:                tc.isTerminal,
 				DisableColors:             tc.disableColor,
 				ForceColors:               tc.forceColors,
 				EnvironmentOverrideColors: len(tc.envVars) > 0,
 			}
 
+			expected := tc.expected
+			if runtime.GOOS == "windows" && !tc.forceColors && os.Getenv("CLICOLOR_FORCE") == "" {
+				// On Windows, without ForceColors or CLICOLOR_FORCE, colors are disabled.
+				expected = false
+			}
+
 			// TODO(thaJeztah): need a way to mock "isTerminal" and check "isColored" for testing
 			//  without depending on non-exported methods and fields.
-			res := tf.isColored()
-			if runtime.GOOS == "windows" && !tc.forceColors && os.Getenv("CLICOLOR_FORCE") == "" {
-				assert.False(t, res)
-			} else {
-				assert.Equal(t, tc.expected, res)
-			}
+			res := tf.isColored(tc.isTerminal) // tc.isTerminal avoids depending on a real TTY
+			assert.Equal(t, expected, res)
 		})
 	}
 }
@@ -592,7 +598,7 @@ func TestCustomSorting_FirstFormat(t *testing.T) {
 		DisableTimestamp: true,
 		SortingFunc: func(keys []string) {
 			sortCalled = true
-			sort.Strings(keys)
+			slices.Sort(keys)
 			for _, key := range keys {
 				if _, ok := entry.Data[key]; !ok {
 					// default ("fixedKeys") should not be included when printing colored.
@@ -615,4 +621,69 @@ func TestCustomSorting_FirstFormat(t *testing.T) {
 			assert.Contains(t, string(out), "colored messages are pretty")
 		})
 	}
+}
+
+func TestTextEntryFieldValueError(t *testing.T) {
+	t.Run("good value", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New()
+		l.SetOutput(&buf)
+		l.SetFormatter(&TextFormatter{DisableTimestamp: true, DisableColors: true})
+
+		l.WithField("ok", "ok").Info("test")
+
+		out := buf.String()
+		if field := FieldKeyLogrusError + "="; strings.Contains(out, field) {
+			t.Errorf(`Unexpected "logrus_error" field in log entry: %v`, out)
+		}
+		if field := `ok=ok`; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain "ok=ok": %v`, out)
+		}
+	})
+
+	// If we dropped an unsupported field, the FieldKeyLogrusError should
+	// contain a message that we did.
+	t.Run("bad and good value", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New()
+		l.SetOutput(&buf)
+		l.SetFormatter(&TextFormatter{DisableTimestamp: true, DisableColors: true})
+
+		l.WithField("func", func() {}).WithField("ok", "ok").Info("test")
+
+		out := buf.String()
+		if field := FieldKeyLogrusError + "="; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain a "logrus_error" field: %v`, out)
+		}
+		if field := `func=`; strings.Contains(out, field) {
+			t.Errorf(`Expected "func" field to be removed from log entry: %v`, out)
+		}
+		if field := `ok=ok`; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain "ok=ok": %v`, out)
+		}
+
+	})
+
+	// This is testing the current behavior; error is preserved, even if an
+	// unsupported value was dropped and replaced with a supported value for
+	// the same field.
+	t.Run("replace bad value", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New()
+		l.SetOutput(&buf)
+		l.SetFormatter(&TextFormatter{DisableTimestamp: true, DisableColors: true})
+
+		l.WithField("func", func() {}).WithField("ok", "ok").WithField("func", "not-a-func").Info("test")
+
+		out := buf.String()
+		if field := FieldKeyLogrusError + "="; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain a "logrus_error" field: %v`, out)
+		}
+		if field := `func=not-a-func`; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain "func=not-a-func": %v`, out)
+		}
+		if field := `ok=ok`; !strings.Contains(out, field) {
+			t.Errorf(`Expected log entry to contain "ok=ok": %v`, out)
+		}
+	})
 }

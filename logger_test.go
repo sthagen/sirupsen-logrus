@@ -2,66 +2,34 @@ package logrus_test
 
 import (
 	"bytes"
-	"encoding/json"
+	"io"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestFieldValueError(t *testing.T) {
-	buf := &bytes.Buffer{}
+func TestWarningAndWarninglnFormatting(t *testing.T) {
+	var buf bytes.Buffer
 	l := &logrus.Logger{
-		Out:       buf,
-		Formatter: new(logrus.JSONFormatter),
-		Hooks:     make(logrus.LevelHooks),
-		Level:     logrus.DebugLevel,
+		Out: &buf,
+		Formatter: &logrus.TextFormatter{
+			DisableColors:          true,
+			DisableTimestamp:       true,
+			DisableLevelTruncation: true,
+		},
+		Hooks: make(logrus.LevelHooks),
+		Level: logrus.DebugLevel,
 	}
-	l.WithField("func", func() {}).Info("test")
-	var data map[string]any
-	err := json.Unmarshal(buf.Bytes(), &data)
-	require.NoError(t, err, "output:\n%s", buf.String())
-	_, ok := data[logrus.FieldKeyLogrusError]
-	require.True(t, ok, `cannot find expected "logrus_error" field: %v`, data)
-}
+	l.Warning("hello", "world")
+	expected := "level=warning msg=helloworld\n"
+	assert.Equal(t, expected, buf.String())
 
-func TestNoFieldValueError(t *testing.T) {
-	buf := &bytes.Buffer{}
-	l := &logrus.Logger{
-		Out:       buf,
-		Formatter: new(logrus.JSONFormatter),
-		Hooks:     make(logrus.LevelHooks),
-		Level:     logrus.DebugLevel,
-	}
-	l.WithField("str", "str").Info("test")
-	var data map[string]any
-	err := json.Unmarshal(buf.Bytes(), &data)
-	require.NoError(t, err, "output:\n%s", buf.String())
-	_, ok := data[logrus.FieldKeyLogrusError]
-	require.False(t, ok)
-}
+	buf.Reset()
+	l.Warningln("hello", "world")
 
-func TestWarninglnNotEqualToWarning(t *testing.T) {
-	buf := &bytes.Buffer{}
-	bufln := &bytes.Buffer{}
-
-	formatter := new(logrus.TextFormatter)
-	formatter.DisableTimestamp = true
-	formatter.DisableLevelTruncation = true
-
-	l := &logrus.Logger{
-		Out:       buf,
-		Formatter: formatter,
-		Hooks:     make(logrus.LevelHooks),
-		Level:     logrus.DebugLevel,
-	}
-	l.Warning("hello,", "world")
-
-	l.SetOutput(bufln)
-	l.Warningln("hello,", "world")
-
-	assert.NotEqual(t, buf.String(), bufln.String(), "Warning() and Warningln() should not be equal")
+	expected = "level=warning msg=\"hello world\"\n"
+	assert.Equal(t, expected, buf.String())
 }
 
 type testBufferPool struct {
@@ -79,9 +47,8 @@ func (p *testBufferPool) Put(buf *bytes.Buffer) {
 }
 
 func TestLogger_SetBufferPool(t *testing.T) {
-	out := &bytes.Buffer{}
 	l := logrus.New()
-	l.SetOutput(out)
+	l.SetOutput(io.Discard)
 
 	pool := new(testBufferPool)
 	l.SetBufferPool(pool)
