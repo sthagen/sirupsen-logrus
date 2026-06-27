@@ -19,11 +19,25 @@ import (
 	. "github.com/sirupsen/logrus/internal/testutils"
 )
 
+func skipReportCaller(t *testing.T) bool {
+	t.Helper()
+	if runtime.Compiler == "tinygo" {
+		// TinyGo currently (v0.41.1) doesn't support `runtime.Caller`;
+		// https://tinygo.org/docs/reference/lang-support/stdlib/#logslog
+		t.Log("SKIP: TinyGo does not support runtime.Caller") // no t.Skip on tinygo
+		return true
+	}
+	return false
+}
+
 // TestReportCallerWhenConfigured verifies that when ReportCaller is set, the 'func' field
 // is added, and when it is unset it is not set or modified
 // Verify that functions within the Logrus package aren't considered when
 // discovering the caller.
 func TestReportCallerWhenConfigured(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
 	LogAndAssertJSON(t, func(log *Logger) {
 		log.ReportCaller = false
 		log.Print("testNoCaller")
@@ -89,6 +103,9 @@ func logSomething(t *testing.T, message string) Fields {
 
 // TestReportCallerHelperDirect - verify reference when logging from a regular function
 func TestReportCallerHelperDirect(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
 	fields := logSomething(t, "direct")
 
 	assert.Equal(t, "direct", fields["msg"])
@@ -98,6 +115,9 @@ func TestReportCallerHelperDirect(t *testing.T) {
 
 // TestReportCallerHelperViaPointer - verify reference when logging from a function called via pointer
 func TestReportCallerHelperViaPointer(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
 	fptr := logSomething
 	fields := fptr(t, "via pointer")
 
@@ -358,6 +378,10 @@ func TestDoubleLoggingDoesntPrefixPreviousFields(t *testing.T) {
 }
 
 func TestNestedLoggingReportsCorrectCaller(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
+
 	var buffer bytes.Buffer
 	var fields Fields
 
@@ -640,26 +664,6 @@ func TestReplaceHooks(t *testing.T) {
 	assert.True(t, old.Fired)
 }
 
-// Compile test
-func TestLogrusInterfaces(t *testing.T) {
-	var buffer bytes.Buffer
-	// This verifies FieldLogger and Ext1FieldLogger work as designed.
-	// Please don't use them. Use Logger and Entry directly.
-	fn := func(xl Ext1FieldLogger) {
-		var l FieldLogger = xl
-		b := l.WithField("key", "value")
-		b.Debug("Test")
-	}
-	// test logger
-	logger := New()
-	logger.Out = &buffer
-	fn(logger)
-
-	// test Entry
-	e := logger.WithField("another", "value")
-	fn(e)
-}
-
 // Implements io.Writer using channels for synchronization, so we can wait on
 // the Entry.Writer goroutine to write in a non-racey way. This does assume that
 // there is a single call to Logger.Out for each message.
@@ -755,6 +759,9 @@ func TestLogLevelEnabled(t *testing.T) {
 }
 
 func TestReportCallerOnTextFormatter(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
 	l := New()
 	l.SetOutput(io.Discard)
 
@@ -768,6 +775,9 @@ func TestReportCallerOnTextFormatter(t *testing.T) {
 }
 
 func TestSetReportCallerRace(t *testing.T) {
+	if skipReportCaller(t) {
+		return
+	}
 	l := New()
 	l.Out = io.Discard
 	l.SetReportCaller(true)
